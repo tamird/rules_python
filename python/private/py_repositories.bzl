@@ -59,6 +59,11 @@ def py_repositories(transition_settings = []):
         host_compatible_repo_names = [],
     )
     http_archive(
+        name = "hermetic_launcher",
+        sha256 = "770951bf4bd5eb407571d3a21bbf002f1c6598e362fb233d03fdbb989df8ff61",
+        url = "https://github.com/hermeticbuild/hermetic-launcher/releases/download/v0.0.17/hermetic_launcher-v0.0.17.tar.gz",
+    )
+    http_archive(
         name = "bazel_skylib",
         sha256 = "6e78f0e57de26801f6f564fa7c4a48dc8b36873e416257a92bbb0937eeac8446",
         urls = [

@@ -17,6 +17,7 @@ load("@bazel_skylib//lib:dicts.bzl", "dicts")
 load("@bazel_skylib//lib:paths.bzl", "paths")
 load("@bazel_skylib//lib:structs.bzl", "structs")
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
+load("@hermetic_launcher//launcher:lib.bzl", "launcher")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_python_internal//:rules_python_config.bzl", rp_config = "config")
 load("//python/private/toolchains:shrubbery_toolchain.bzl", "get_shrubbery_tool")
@@ -219,6 +220,10 @@ accepting arbitrary Python versions.
         "_bootstrap_impl_flag": lambda: attrb.Label(
             default = labels.BOOTSTRAP_IMPL,
             providers = [BuildSettingInfo],
+        ),
+        "_native_bootstrap_template": lambda: attrb.Label(
+            allow_single_file = True,
+            default = "//python/private:native_stage1_template.py",
         ),
         "_build_data_writer": lambda: attrb.Label(
             default = "//python/private:build_data_writer",
@@ -458,7 +463,26 @@ WARNING: Target: {}
         # itself, so add it to the default outputs.
         extra_default_outputs.append(bootstrap_output)
 
-    if should_create_executable_zip:
+    if BootstrapImplFlag.get_value(ctx) == BootstrapImplFlag.NATIVE:
+        if should_create_executable_zip or not venv or not venv.interpreter or venv.recreate_venv_at_runtime:
+            fail("Native startup requires a declared interpreter and a build-time virtual environment")
+        if not ctx.toolchains[launcher.finalizer_toolchain_type] or not ctx.toolchains[launcher.template_toolchain_type]:
+            fail("No native Python launcher is available for the selected platforms")
+        # Python options can come from either the rule or the caller. Read them
+        # before starting the application, without embedding them in the native
+        # launcher (which has a fixed number of argument slots).
+        prepare = ctx.actions.declare_file("_{}_native_stage1.py".format(base_executable_name), sibling = executable)
+        ctx.actions.expand_template(
+            template = ctx.file._native_bootstrap_template,
+            output = prepare,
+            substitutions = {'["%interpreter_args%"]': repr(ctx.attr.interpreter_args)},
+        )
+        bootstrap = launcher.entrypoint(venv.interpreter)
+        bootstrap.embedded_args("-I", "-S")
+        bootstrap.runfiles(prepare, stage2_bootstrap)
+        bootstrap.compile(ctx, output_file = executable)
+        extra_runfiles = extra_runfiles.merge(ctx.runfiles([prepare]))
+    elif should_create_executable_zip:
         if bootstrap_output != None:
             fail("Should not occur: bootstrap_output should not be used " +
                  "when creating an executable zip")
@@ -660,7 +684,7 @@ def _create_venv(ctx, output_prefix, imports, runtime_details, add_runfiles_root
 
 def _create_venv_unixy(ctx, *, venv_ctx_rel_root, runtime, interpreter_actual_path):
     interpreter_runfiles = builders.RunfilesBuilder()
-    is_bootstrap_script = BootstrapImplFlag.get_value(ctx) == BootstrapImplFlag.SCRIPT
+    is_bootstrap_script = BootstrapImplFlag.get_value(ctx) in (BootstrapImplFlag.SCRIPT, BootstrapImplFlag.NATIVE)
     create_full_venv = True
 
     # The legacy build_python_zip codepath (enabled by default on windows) isn't
@@ -2244,6 +2268,8 @@ def create_executable_rule_builder(implementation, **kwargs):
         provides = [PyExecutableInfo, PyInfo] + _MaybeBuiltinPyInfo,
         toolchains = [
             ruleb.ToolchainType(TOOLCHAIN_TYPE),
+            ruleb.ToolchainType(launcher.finalizer_toolchain_type, mandatory = False),
+            ruleb.ToolchainType(launcher.template_toolchain_type, mandatory = False),
             ruleb.ToolchainType(EXEC_TOOLS_TOOLCHAIN_TYPE, mandatory = False),
             ruleb.ToolchainType(CC_TOOLCHAIN_TYPE, mandatory = False),
             ruleb.ToolchainType(SHRUBBERY_TOOLCHAIN_TYPE, mandatory = False),

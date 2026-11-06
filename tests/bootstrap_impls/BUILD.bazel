@@ -240,6 +240,10 @@ pkg_tar(
 sh_test(
     name = "external_binary_test",
     srcs = ["external_binary_test.sh"],
+    args = [
+        "$(rootpath :external_binary)",
+        "./external_main",
+    ],
     data = [":external_binary"],
     # For now, skip this test on Windows because it fails for reasons
     # other than the code path being tested.
@@ -247,6 +251,30 @@ sh_test(
         "@platforms//os:windows": ["@platforms//:incompatible"],
         "//conditions:default": [],
     }),
+)
+
+pkg_tar(
+    name = "external_native_binary",
+    testonly = True,
+    srcs = ["@other//:external_native_main"],
+    include_runfiles = True,
+    tags = ["manual"],
+)
+
+sh_test(
+    name = "external_native_binary_test",
+    srcs = ["external_binary_test.sh"],
+    # Locate the interpreter in the extracted archive, without Bazel's
+    # runfiles environment or a shell on PATH.
+    args = [
+        "$(rootpath :external_native_binary)",
+        "env",
+        "-i",
+        "PATH=",
+        "./external_native_main",
+    ],
+    data = [":external_native_binary"],
+    target_compatible_with = SUPPORTS_BOOTSTRAP_SCRIPT,
 )
 
 py_test(

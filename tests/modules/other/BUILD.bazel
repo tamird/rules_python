@@ -15,6 +15,14 @@ py_reconfig_binary(
     main = "external_main.py",
 )
 
+py_reconfig_binary(
+    name = "external_native_main",
+    srcs = [":external_main.py"],
+    bootstrap_impl = "native",
+    build_python_zip = False,
+    main = "external_main.py",
+)
+
 py_binary(
     name = "venv_bin",
     srcs = ["venv_bin.py"],
