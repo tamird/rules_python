@@ -3,7 +3,8 @@ set -euxo pipefail
 
 tmpdir="${TEST_TMPDIR}/external_binary"
 mkdir -p "${tmpdir}"
-tar xf "tests/bootstrap_impls/external_binary.tar" -C "${tmpdir}"
-test -x "${tmpdir}/external_main"
-output="$("${tmpdir}/external_main")"
+tar xf "$1" -C "${tmpdir}"
+shift
+cd "${tmpdir}"
+output="$("$@")"
 test "$output" = "token"
