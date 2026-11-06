@@ -481,7 +481,15 @@ WARNING: Target: {}
         bootstrap = launcher.entrypoint(venv.interpreter)
         bootstrap.embedded_args("-I", "-S")
         bootstrap.runfiles(prepare, venv.interpreter, stage2_bootstrap)
-        bootstrap.compile(ctx, output_file = executable, finalizer_toolchain_type = _NATIVE_FINALIZER)
+
+        # A packaged program owns its runfiles. Its caller may have exported
+        # a different program's runfiles directory.
+        bootstrap.compile(
+            ctx,
+            finalizer_toolchain_type = _NATIVE_FINALIZER,
+            output_file = executable,
+            prefer_adjacent_runfiles = True,
+        )
         extra_runfiles = extra_runfiles.merge(ctx.runfiles([prepare]))
     elif should_create_executable_zip:
         if bootstrap_output != None:
