@@ -143,6 +143,7 @@ def _bootstrap_impl_flag_get_value(ctx):
 
 # buildifier: disable=name-conventions
 BootstrapImplFlag = enum(
+    NATIVE = "native",
     SYSTEM_PYTHON = "system_python",
     SCRIPT = "script",
     get_value = _bootstrap_impl_flag_get_value,

@@ -97,6 +97,8 @@ exports_files(
     visibility = NOT_ACTUALLY_PUBLIC,
 )
 
+exports_files(["native_stage1_template.py"], visibility = NOT_ACTUALLY_PUBLIC)
+
 filegroup(
     name = "stage1_bootstrap_template",
     srcs = ["stage1_bootstrap_template.sh"],
