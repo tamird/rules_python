@@ -390,9 +390,11 @@ Values:
 * `native`: Start the toolchain's interpreter with a native executable. A
   program packaged with its runfiles can start on a system without Bash or a
   system Python. This mode requires a launcher for the target platform, a
-  build-time virtual environment, and {bzl:flag}`build_python_zip` set to
-  `false`. The interpreter's own runtime libraries must also be available on
-  the target.
+  {rule}`py_runtime` with an `interpreter` file, a build-time virtual
+  environment, and {bzl:flag}`build_python_zip` set to `false`. The
+  interpreter's own runtime libraries must also be available on the target.
+  See {obj}`PyRuntimeInfo.bootstrap_template` to customize how the launcher
+  starts the application.
 
 :::{note}
 The `script` bootstrap requires the toolchain to provide the `PyRuntimeInfo`

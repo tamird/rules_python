@@ -96,8 +96,6 @@ exports_files(
     visibility = NOT_ACTUALLY_PUBLIC,
 )
 
-exports_files(["native_stage1_template.py"], visibility = NOT_ACTUALLY_PUBLIC)
-
 filegroup(
     name = "stage1_bootstrap_template",
     srcs = ["stage1_bootstrap_template.sh"],
@@ -128,6 +126,7 @@ filegroup(
 alias(
     name = "bootstrap_template",
     actual = select({
+        ":is_native_bootstrap_enabled": "native_stage1_template.py",
         ":is_script_bootstrap_enabled": "stage1_bootstrap_template.sh",
         "//conditions:default": "python_bootstrap_template.txt",
     }),
@@ -138,6 +137,13 @@ alias(
 
 # Used to determine the use of `--stamp` in Starlark rules
 stamp_build_setting(name = "stamp")
+
+config_setting(
+    name = "is_native_bootstrap_enabled",
+    flag_values = {
+        "//python/config_settings:bootstrap_impl": "native",
+    },
+)
 
 config_setting(
     name = "is_script_bootstrap_enabled",
@@ -570,6 +576,7 @@ bzl_library(
         "@bazel_skylib//lib:paths",
         "@bazel_skylib//lib:structs",
         "@bazel_skylib//rules:common_settings",
+        "@hermetic_launcher//launcher:lib_bzl",
         "@rules_cc//cc/common",
         "@rules_python_internal//:rules_python_config",
     ],

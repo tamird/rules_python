@@ -177,6 +177,12 @@ This code is responsible for:
 The {obj}`--bootstrap_impl` flag affects how this stage 1 bootstrap
 is expected to behave and the substutitions performed.
 
+With `--bootstrap_impl=native`, the template must be a Python script. The
+launcher runs it with `-I -S` and passes the resolved interpreter, the
+second-stage bootstrap, and the application's arguments in `sys.argv[1:]`.
+The expression `["%interpreter_args%"]` expands to the target's list of
+interpreter arguments.
+
 * `--bootstrap_impl=system_python` substitutions: `%is_zipfile%`, `%python_binary%`,
   `%target%`, `%workspace_name`, `%coverage_tool%`, `%import_all%`, `%imports%`,
   `%main%`, `%shebang%`

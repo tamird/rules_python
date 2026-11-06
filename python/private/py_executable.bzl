@@ -110,7 +110,7 @@ The args an interpreter supports are specific to the interpreter. For
 CPython, see <https://docs.python.org/3/using/cmdline.html>.
 
 :::{note}
-Only supported for {obj}`--bootstrap_impl=script`. Ignored otherwise.
+Supported for the `script` and `native` values of {obj}`--bootstrap_impl`.
 :::
 
 :::{seealso}
@@ -220,10 +220,6 @@ accepting arbitrary Python versions.
         "_bootstrap_impl_flag": lambda: attrb.Label(
             default = labels.BOOTSTRAP_IMPL,
             providers = [BuildSettingInfo],
-        ),
-        "_native_bootstrap_template": lambda: attrb.Label(
-            allow_single_file = True,
-            default = "//python/private:native_stage1_template.py",
         ),
         "_build_data_writer": lambda: attrb.Label(
             default = "//python/private:build_data_writer",
@@ -464,22 +460,25 @@ WARNING: Target: {}
         extra_default_outputs.append(bootstrap_output)
 
     if BootstrapImplFlag.get_value(ctx) == BootstrapImplFlag.NATIVE:
-        if should_create_executable_zip or not venv or not venv.interpreter or venv.recreate_venv_at_runtime:
-            fail("Native startup requires a declared interpreter and a build-time virtual environment")
+        if not venv or not runtime_details.effective_runtime.interpreter:
+            fail("Native startup requires a py_runtime with an interpreter file")
+        if should_create_executable_zip or not venv.interpreter or venv.recreate_venv_at_runtime:
+            fail("Native startup requires a build-time virtual environment and build_python_zip=False")
         if not ctx.toolchains[launcher.finalizer_toolchain_type] or not ctx.toolchains[launcher.template_toolchain_type]:
             fail("No native Python launcher is available for the selected platforms")
+
         # Python options can come from either the rule or the caller. Read them
         # before starting the application, without embedding them in the native
         # launcher (which has a fixed number of argument slots).
         prepare = ctx.actions.declare_file("_{}_native_stage1.py".format(base_executable_name), sibling = executable)
         ctx.actions.expand_template(
-            template = ctx.file._native_bootstrap_template,
+            template = runtime_details.effective_runtime.bootstrap_template,
             output = prepare,
             substitutions = {'["%interpreter_args%"]': repr(ctx.attr.interpreter_args)},
         )
         bootstrap = launcher.entrypoint(venv.interpreter)
         bootstrap.embedded_args("-I", "-S")
-        bootstrap.runfiles(prepare, stage2_bootstrap)
+        bootstrap.runfiles(prepare, venv.interpreter, stage2_bootstrap)
         bootstrap.compile(ctx, output_file = executable)
         extra_runfiles = extra_runfiles.merge(ctx.runfiles([prepare]))
     elif should_create_executable_zip:

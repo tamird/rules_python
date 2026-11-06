@@ -3,7 +3,7 @@
 ::::{envvar} RULES_PYTHON_ADDITIONAL_INTERPRETER_ARGS
 
 This variable allows for additional arguments to be provided to the Python interpreter
-at bootstrap time when the `bash` bootstrap is used. If
+at bootstrap time. If
 `RULES_PYTHON_ADDITIONAL_INTERPRETER_ARGS` were provided as `-Xaaa`, then the command
 would be:
 

@@ -32,7 +32,7 @@ target_args = ["%interpreter_args%"]
 os.environ.setdefault("PYTHONSAFEPATH", "1")
 key = "RULES_PYTHON_ADDITIONAL_INTERPRETER_ARGS"
 additional_args = script_args(os.environ.pop(key)) if os.environ.get(key) else ()
-os.execv(
-    sys.executable,
-    [sys.executable, *additional_args, *target_args, *sys.argv[1:]],
-)
+# PYTHONEXECUTABLE can change sys.executable. Start the interpreter selected
+# by the target even when the caller supplies a different executable name.
+interpreter, *args = sys.argv[1:]
+os.execv(interpreter, [interpreter, *additional_args, *target_args, *args])
