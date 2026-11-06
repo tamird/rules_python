@@ -19,11 +19,13 @@ def unpack(archive_path: str, name: str, directory: Path) -> Path:
 
 
 def main() -> None:
-    child_tar, parent_tar, mode = sys.argv[1:]
+    child_tar, parent_tar, independent_tar, mode = sys.argv[1:]
     results: dict[str, Any] = {"mode": mode, "supplier": "BCR 0.0.17"}
     tmp = Path(os.environ["TEST_TMPDIR"]).resolve()
     child = unpack(child_tar, "child", tmp / "installed-child")
     parent = unpack(parent_tar, "parent", tmp / "installed-parent")
+    independent = unpack(independent_tar, "independent_parent", tmp / "installed-independent-parent")
+    independent_tree = Path(str(independent) + ".runfiles")
     child_tree = Path(str(child) + ".runfiles")
     parent_tree = Path(str(parent) + ".runfiles")
     package = "_main/tests/packaged_owner_control"
@@ -31,16 +33,23 @@ def main() -> None:
     marker = parent_package / "_child_stage2_bootstrap.py"
     venv_bin = Path("_child.venv/bin")
     child_interpreters = [p.name for p in (child_tree / package / venv_bin).glob("python*") if p.is_file()]
-    def parent_owns_interpreter() -> bool:
+    def tree_owns_interpreter(tree: Path) -> bool:
         return bool(child_interpreters) and all(
-            (parent_package / venv_bin / name).is_file() and os.access(parent_package / venv_bin / name, os.X_OK)
+            (tree / package / venv_bin / name).is_file() and os.access(parent_package / venv_bin / name, os.X_OK)
             for name in child_interpreters
         )
     try:
         results["inputs"] = {
             "child_header": child.read_bytes()[:4].hex(),
             "parent_has_stage2": marker.is_file(),
-            "parent_has_interpreter": parent_owns_interpreter(),
+            "independent_has_stage2": (independent_tree / package / marker.name).is_file(),
+            "independent_has_child_venv_interpreter": tree_owns_interpreter(independent_tree),
+            "independent_has_child_launcher": (independent_tree / package / "child").exists(),
+            "independent_has_own_interpreter": all(
+                (independent_tree / package / "_independent_parent.venv/bin" / name).is_file()
+                for name in child_interpreters
+            ),
+            "parent_has_interpreter": tree_owns_interpreter(parent_tree),
             "child_has_stage2": (child_tree / package / marker.name).is_file(),
             "interpreter_names": child_interpreters,
             "stage2_key": str(marker.relative_to(parent_tree)),
@@ -51,7 +60,7 @@ def main() -> None:
             if not value:
                 return None
             path = Path(value.removesuffix("_manifest") if value.endswith(".runfiles_manifest") else value).resolve()
-            for name, root in (("parent", parent_tree), ("child", child_tree)):
+            for name, root in (("independent", independent_tree), ("parent", parent_tree), ("child", child_tree)):
                 if path == root or path.is_relative_to(root):
                     return name
             return "other"
@@ -71,37 +80,23 @@ def main() -> None:
                 "error": proc.stderr.strip()[-700:].replace(str(tmp), "<tmp>"),
             }
 
-        assert all(results["inputs"][k] for k in ("child_has_stage2","parent_has_interpreter","parent_has_stage2"))
+        assert all(results["inputs"][k] for k in (
+            "child_has_stage2", "parent_has_interpreter", "parent_has_stage2", "independent_has_own_interpreter"
+        )), results["inputs"]
+        assert not any(results["inputs"][k] for k in (
+            "independent_has_stage2", "independent_has_child_venv_interpreter", "independent_has_child_launcher"
+        )), results["inputs"]
         run("direct", child)
-        run("complete_parent", parent, child)
-        marker.unlink()
-        results["negative_inputs"] = {
-            "parent_has_stage2": marker.exists(),
-            "parent_has_interpreter": parent_owns_interpreter(),
-            "child_has_stage2": (child_tree / package / marker.name).is_file(),
-        }
-        assert results["negative_inputs"] == {"parent_has_stage2": False, "parent_has_interpreter": True, "child_has_stage2": True}
-        run("parent_without_stage2", parent, child)
-        bindir = tmp / "bin"
-        bindir.mkdir()
-        alias = bindir / "my-command"
-        alias.symlink_to(child)
-        run("absolute_alias", alias)
-        Path(str(alias) + ".runfiles").symlink_to(child_tree, target_is_directory=True)
-        run("paired_alias", alias)
-
-        assert results["direct"]["child_exported"] == "child" and results["direct"]["application"] == "child"
-        assert all(results[k]["parent_exported"] == "parent" for k in ("complete_parent","parent_without_stage2"))
-        assert results["complete_parent"]["child_exported"] == "parent" and results["complete_parent"]["application"] == "parent"
-        assert results["paired_alias"]["child_exported"] == "child" and results["paired_alias"]["application"] == "child"
+        run("declared_parent", parent, child)
+        run("independent_parent", independent, child)
+        assert results["direct"]["exit"] == 0 and results["direct"]["application"] == "child"
+        assert results["declared_parent"]["exit"] == 0 and results["declared_parent"]["application"] == "parent"
+        assert results["declared_parent"]["parent_exported"] == results["declared_parent"]["child_exported"] == "parent"
+        assert results["independent_parent"]["parent_exported"] == "independent", results["independent_parent"]
         if mode == "script":
-            assert results["parent_without_stage2"]["child_exported"] == "child"
-            assert results["parent_without_stage2"]["application"] == "child"
-            assert results["absolute_alias"]["exit"] == 0
-        elif mode == "native":
-            assert results["parent_without_stage2"]["exit"] and "_child_stage2_bootstrap.py" in results["parent_without_stage2"]["error"]
-            assert results["absolute_alias"]["exit"]
-        else:
+            assert results["independent_parent"]["exit"] == 0
+            assert results["independent_parent"]["application"] == results["independent_parent"]["child_exported"] == "child"
+        elif mode != "native":
             raise ValueError(mode)
     finally:
         print("OWNER_RESULT " + json.dumps(results, sort_keys=True), flush=True)

@@ -13,6 +13,18 @@ py_binary(
     data = [":child"],
 )
 
+py_binary(
+    name = "independent_parent",
+    srcs = ["parent.py"],
+    main = "parent.py",
+)
+
+pkg_tar(
+    name = "independent_parent_archive",
+    srcs = [":independent_parent"],
+    include_runfiles = True,
+)
+
 pkg_tar(
     name = "child_archive",
     srcs = [":child"],
@@ -31,9 +43,11 @@ py_test(
     args = [
         "$(rootpath :child_archive)",
         "$(rootpath :parent_archive)",
+        "$(rootpath :independent_parent_archive)",
     ],
     data = [
         ":child_archive",
+        ":independent_parent_archive",
         ":parent_archive",
     ],
 )

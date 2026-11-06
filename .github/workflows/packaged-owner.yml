@@ -1,20 +1,21 @@
 name: Compare the runfiles exported by packaged Python programs
 on:
   push:
-    branches: [qualification/packaged-runfiles-owner-results]
+    branches: [qualification/independent-python-package-runfiles]
 permissions: {contents: read}
 jobs:
   native:
-    if: github.repository == 'tamird/rules_python' && github.actor == github.repository_owner && github.event.created && github.run_attempt == 1
+    if: github.repository == 'tamird/rules_python' && github.actor == github.repository_owner && github.event.created && !github.event.deleted && github.run_attempt == 1
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with: {fetch-depth: 3, persist-credentials: false}
+        with: {fetch-depth: 4, persist-credentials: false}
       - name: Run both packaged parent and child tests
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^^)" = ed9fe9ff2db20bacf42dadbd8d80b2ac36867128
+          test "$(git rev-parse HEAD^)" = c7781067f5a40c2610793668f7aef86e42d56481
+          test "$(git rev-parse HEAD^^^)" = ed9fe9ff2db20bacf42dadbd8d80b2ac36867128
           curl --retry 3 -fsSL https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-amd64 -o "$RUNNER_TEMP/bazelisk"
           echo "5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992  $RUNNER_TEMP/bazelisk" | sha256sum -c -
           chmod 755 "$RUNNER_TEMP/bazelisk"
@@ -22,7 +23,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
-          name: original-ownership-controls
+          name: independently-packaged-python-child
           path: ${{ runner.temp }}/owner-receipt.json
           if-no-files-found: error
           retention-days: 7
