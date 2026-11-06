@@ -145,6 +145,26 @@ config_setting(
     },
 )
 
+# The finalizer and template are downloaded executables. Select their
+# toolchain types only when a Python target uses the native bootstrap.
+toolchain_type(name = "unused_native_launcher_toolchain_type")
+
+alias(
+    name = "native_launcher_finalizer_toolchain_type",
+    actual = select({
+        ":is_native_bootstrap_enabled": "@hermetic_launcher//launcher:finalizer_toolchain_type",
+        "//conditions:default": ":unused_native_launcher_toolchain_type",
+    }),
+)
+
+alias(
+    name = "native_launcher_template_toolchain_type",
+    actual = select({
+        ":is_native_bootstrap_enabled": "@hermetic_launcher//launcher:template_toolchain_type",
+        "//conditions:default": ":unused_native_launcher_toolchain_type",
+    }),
+)
+
 config_setting(
     name = "is_script_bootstrap_enabled",
     flag_values = {

@@ -2267,8 +2267,8 @@ def create_executable_rule_builder(implementation, **kwargs):
         provides = [PyExecutableInfo, PyInfo] + _MaybeBuiltinPyInfo,
         toolchains = [
             ruleb.ToolchainType(TOOLCHAIN_TYPE),
-            ruleb.ToolchainType(launcher.finalizer_toolchain_type, mandatory = False),
-            ruleb.ToolchainType(launcher.template_toolchain_type, mandatory = False),
+            ruleb.ToolchainType(Label("//python/private:native_launcher_finalizer_toolchain_type"), mandatory = False),
+            ruleb.ToolchainType(Label("//python/private:native_launcher_template_toolchain_type"), mandatory = False),
             ruleb.ToolchainType(EXEC_TOOLS_TOOLCHAIN_TYPE, mandatory = False),
             ruleb.ToolchainType(CC_TOOLCHAIN_TYPE, mandatory = False),
             ruleb.ToolchainType(SHRUBBERY_TOOLCHAIN_TYPE, mandatory = False),
