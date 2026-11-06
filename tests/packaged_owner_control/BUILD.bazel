@@ -1,0 +1,39 @@
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+load("//python:py_binary.bzl", "py_binary")
+load("//python:py_test.bzl", "py_test")
+
+py_binary(
+    name = "child",
+    srcs = ["child.py"],
+)
+
+py_binary(
+    name = "parent",
+    srcs = ["parent.py"],
+    data = [":child"],
+)
+
+pkg_tar(
+    name = "child_archive",
+    srcs = [":child"],
+    include_runfiles = True,
+)
+
+pkg_tar(
+    name = "parent_archive",
+    srcs = [":parent"],
+    include_runfiles = True,
+)
+
+py_test(
+    name = "source_owner_test",
+    srcs = ["source_owner_test.py"],
+    args = [
+        "$(rootpath :child_archive)",
+        "$(rootpath :parent_archive)",
+    ],
+    data = [
+        ":child_archive",
+        ":parent_archive",
+    ],
+)
