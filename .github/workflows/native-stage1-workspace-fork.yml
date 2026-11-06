@@ -1,0 +1,65 @@
+name: Check the native-launcher dependency in a legacy workspace
+on:
+  push:
+    branches: [qualification/native-stage1-workspace]
+permissions:
+  contents: read
+jobs:
+  workspace:
+    if: github.repository == 'tamird/rules_python' && github.event.created
+    runs-on: ubuntu-24.04
+    timeout-minutes: 27
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: {fetch-depth: 4, persist-credentials: false}
+      - name: Run the same supplier example on three sources
+        env:
+          USE_BAZEL_VERSION: 7.6.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/workspace-python"
+          mkdir -p "$out"
+          test "$(git rev-parse HEAD^)" = 7c162f22a21236767426d4406e2e847d23e9a61e
+          test "$(git rev-parse HEAD^^)" = 804470ef813ec3a25df2432d374f84bac6ec2d76
+          test "$(git rev-parse HEAD^^^)" = 943362ffab1a2e8488f50b8554256f9330d3837e
+          curl -fsSL --proto '=https' --proto-redir '=https' https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-amd64 -o "$out/bazelisk"
+          echo "5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992  $out/bazelisk" | sha256sum -c -
+          chmod 755 "$out/bazelisk"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, sys
+          root = pathlib.Path.cwd()
+          out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "workspace-python"
+          results = {}
+          def case(name, sha, mode, code, expected=()):
+              subprocess.run(["git", "checkout", "--detach", sha], cwd=root, check=True)
+              assert subprocess.check_output(["git","rev-parse","HEAD"], cwd=root, text=True).strip()==sha
+              args = [str(out/"bazelisk"), "--ignore_all_rc_files", mode, "--noenable_bzlmod", "--enable_workspace",
+                      "//tests:version_3_11_test"]
+              if mode == "test":
+                  args += ["--nocache_test_results", "--test_output=errors", "--test_summary=detailed"]
+              if name == "native_without_templates":
+                  args.append("--@rules_python//python/config_settings:bootstrap_impl=native")
+              p = subprocess.run(args,cwd=root/"examples/multi_python_versions",stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+              log=p.stdout.decode(errors="replace")
+              (out/(name+".log")).write_bytes(p.stdout)
+              checks={s:s.lower() in log.lower() for s in expected}
+              # Confirm the positive test actually executed, not merely that its target loaded.
+              if name in ("released","fixed"):
+                  checks["passed"] = "PASSED" in log and "1 test passes" in log
+              passed = (p.returncode==0 if code==0 else p.returncode!=0) and all(checks.values())
+              results[name]={"sha":sha,"exit":p.returncode,"checks":checks,"passed":passed,"log_sha256":hashlib.sha256(p.stdout).hexdigest()}
+              (out/"workspace.json").write_text(json.dumps(results,indent=2)+"\n")
+              if not passed: print(log[-6000:],flush=True)
+          case("released","943362ffab1a2e8488f50b8554256f9330d3837e","test",0)
+          case("missing_repository","804470ef813ec3a25df2432d374f84bac6ec2d76","query",1,["hermetic_launcher","repository"])
+          case("fixed","7c162f22a21236767426d4406e2e847d23e9a61e","test",0)
+          case("native_without_templates","7c162f22a21236767426d4406e2e847d23e9a61e","build",1,["No native Python launcher is available for the selected platforms"])
+          sys.exit(not all(i["passed"] for i in results.values()))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: native-startup-workspace
+          path: ${{ runner.temp }}/workspace-python/workspace.json
+          retention-days: 7
