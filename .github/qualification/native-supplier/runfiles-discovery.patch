@@ -1,0 +1,370 @@
+diff --git a/runfiles-stub/src/runfiles.rs b/runfiles-stub/src/runfiles.rs
+--- a/runfiles-stub/src/runfiles.rs
++++ b/runfiles-stub/src/runfiles.rs
+@@ -33,11 +33,46 @@
+ }
+ 
+ impl Runfiles {
+-    pub fn create(rt: &platform::RuntimeArgs) -> Option<Self> {
+-        // Environment-provided sources take precedence over sources discovered
+-        // next to the executable. Within a tier, `select_source` applies the
+-        // platform's directory-vs-manifest preference.
+-        if let Some(rf) = select_source(
++    pub fn create(rt: &platform::RuntimeArgs, prefer_adjacent: bool) -> Option<Self> {
++        let adjacent = || {
++            // Locate runfiles next to the launching executable: the
++            // <executable>.runfiles directory and the <executable>.runfiles_manifest
++            // file, in the platform's preferred order. The executable path comes from
++            // the OS (an absolute, non-symlink-resolved launch path), not from argv[0].
++            let path = rt.executable_path()?;
++            let path = core::str::from_utf8(&path[..cstr_len(&path)]).ok()?;
++            if path.is_empty() {
++                return None;
++            }
++            if let Some(runfiles) = Self::beside(path) {
++                return Some(runfiles);
++            }
++            #[cfg(unix)]
++            if prefer_adjacent {
++                // An installed command may be a symlink with the package's
++                // runfiles beside its target. Check the invoked spelling first.
++                let mut path = String::from(path);
++                for _ in 0..40 {
++                    path = link_target(&path)?;
++                    if let Some(runfiles) = Self::beside(&path) {
++                        return Some(runfiles);
++                    }
++                }
++            }
++            None
++        };
++
++        // Select one source for every argument and for the child's environment.
++        // A packaged program can prefer its own source to its caller's.
++        if prefer_adjacent {
++            adjacent().or_else(Self::from_env)
++        } else {
++            Self::from_env().or_else(adjacent)
++        }
++    }
++
++    fn from_env() -> Option<Self> {
++        select_source(
+             || {
+                 platform::get_env_var("RUNFILES_DIR")
+                     .filter(|path| !path.is_empty() && dir_exists(path))
+@@ -56,45 +91,25 @@
+                         })
+                     })
+             },
+-        ) {
+-            return Some(rf);
+-        }
+-
+-        // Locate runfiles next to the launching executable: the
+-        // <executable>.runfiles directory and the <executable>.runfiles_manifest
+-        // file, in the platform's preferred order. The executable path comes from
+-        // the OS (an absolute, non-symlink-resolved launch path), not from argv[0].
+-        if let Some(exe_path) = rt.executable_path() {
+-            let exe_len = cstr_len(&exe_path);
+-            if exe_len > 0 {
+-                // Convert the executable path to a string (if valid UTF-8).
+-                let exe_str = core::str::from_utf8(&exe_path[..exe_len]).ok()?;
+-                let runfiles_dir = String::from(exe_str) + ".runfiles";
+-                let manifest_path = String::from(exe_str) + ".runfiles_manifest";
+-
+-                if let Some(rf) = select_source(
+-                    || {
+-                        dir_exists(&runfiles_dir).then(|| Self::Directory {
+-                            path: runfiles_dir.clone(),
+-                        })
+-                    },
+-                    || {
+-                        platform::load_manifest(&manifest_path).map(|manifest| Self::Manifest {
+-                            manifest,
+-                            path: manifest_path.clone(),
+-                            // Preserve the logical path even though the sibling
+-                            // tree is absent; the manifest selected the actual
+-                            // executable.
+-                            logical_dir: Some(LogicalDir::Adjacent(runfiles_dir.clone())),
+-                        })
+-                    },
+-                ) {
+-                    return Some(rf);
+-                }
+-            }
+-        }
+-
+-        None
++        )
++    }
++
++    fn beside(exe: &str) -> Option<Self> {
++        let runfiles_dir = String::from(exe) + ".runfiles";
++        let manifest_path = String::from(exe) + ".runfiles_manifest";
++        select_source(
++            || dir_exists(&runfiles_dir).then(|| Self::Directory { path: runfiles_dir.clone() }),
++            || {
++                platform::load_manifest(&manifest_path).map(|manifest| Self::Manifest {
++                    manifest,
++                    path: manifest_path.clone(),
++                    // Preserve the logical path even though the sibling
++                    // tree is absent; the manifest selected the actual
++                    // executable.
++                    logical_dir: Some(LogicalDir::Adjacent(runfiles_dir.clone())),
++                })
++            },
++        )
+     }
+ 
+     pub fn rlocation(&self, path: &str) -> Option<String> {
+@@ -176,6 +191,22 @@
+     } else {
+         manifest().or_else(directory)
+     }
++}
++
++#[cfg(unix)]
++fn link_target(path: &str) -> Option<String> {
++    let mut buf = [0_u8; 4096];
++    let len = platform::read_link(path, &mut buf);
++    if len <= 0 || len as usize == buf.len() {
++        return None;
++    }
++    let target = core::str::from_utf8(&buf[..len as usize]).ok()?;
++    if target.starts_with('/') {
++        return Some(String::from(target));
++    }
++    // Resolve a relative link in its parent, independently of the caller's cwd.
++    let (dir, _) = path.rsplit_once('/')?;
++    Some(String::from(dir) + "/" + target)
+ }
+ 
+ fn dir_exists(path: &str) -> bool {
+diff --git a/runfiles-stub/src/run.rs b/runfiles-stub/src/run.rs
+--- a/runfiles-stub/src/run.rs
++++ b/runfiles-stub/src/run.rs
+@@ -96,7 +96,7 @@
+     let needs_runfiles = needs_transform || export_runfiles_env;
+ 
+     let runfiles = if needs_runfiles {
+-        match Runfiles::create(&rt) {
++        match Runfiles::create(&rt, placeholders::prefer_adjacent_runfiles()) {
+             Some(rf) => Some(rf),
+             None => {
+                 eline(b"ERROR: Failed to initialize runfiles");
+diff --git a/runfiles-stub/src/placeholders.rs b/runfiles-stub/src/placeholders.rs
+--- a/runfiles-stub/src/placeholders.rs
++++ b/runfiles-stub/src/placeholders.rs
+@@ -22,6 +22,10 @@
+         #[used]
+         #[link_section = $section]
+         static mut EXPORT_RUNFILES_ENV: [u8; 32] = *b"@@RUNFILES_EXPORT_ENV@@\0\0\0\0\0\0\0\0\0";
++
++        #[used]
++        #[link_section = $section]
++        static mut PREFER_ADJACENT_RUNFILES: [u8; 32] = *b"@@PREFER_ADJACENT_RUNFILES@@\0\0\0\0";
+ 
+         // The ten argument placeholders as one contiguous 2D array rather than ten
+         // separate statics. `arg()` indexes it with pointer arithmetic, which lowers
+@@ -64,6 +68,10 @@
+     read(core::ptr::addr_of!(EXPORT_RUNFILES_ENV) as *const u8, 32)
+ }
+ 
++pub fn prefer_adjacent_runfiles() -> bool {
++    read(core::ptr::addr_of!(PREFER_ADJACENT_RUNFILES) as *const u8, 32)[0] == b'1'
++}
++
+ pub fn arg(i: usize) -> &'static [u8] {
+     // Clamp to the last slot, matching the previous per-index behaviour. Indexing
+     // the single ARGS array lowers to a PC-relative address (no rebased pointer
+diff --git a/runfiles-stub/src/linux.rs b/runfiles-stub/src/linux.rs
+--- a/runfiles-stub/src/linux.rs
++++ b/runfiles-stub/src/linux.rs
+@@ -64,6 +64,7 @@
+     pub const SYS_LSEEK: usize = 8;
+     pub const SYS_MMAP: usize = 9;
+     pub const SYS_ACCESS: usize = 21;
++    pub const SYS_READLINK: usize = 89;
+     pub const SYS_GETCWD: usize = 79;
+     pub const SYS_EXECVE: usize = 59;
+     pub const SYS_EXIT: usize = 60;
+@@ -77,6 +78,7 @@
+     pub const SYS_CLOSE: usize = 57;
+     pub const SYS_LSEEK: usize = 62;
+     pub const SYS_MMAP: usize = 222;
++    pub const SYS_READLINKAT: usize = 78;
+     pub const SYS_FACCESSAT: usize = 48;  // faccessat is used on aarch64
+     pub const SYS_GETCWD: usize = 17;
+     pub const SYS_EXECVE: usize = 221;
+@@ -94,6 +96,7 @@
+     pub const SYS_LSEEK: usize = 19;
+     pub const SYS_EXECVE: usize = 11;
+     pub const SYS_ACCESS: usize = 33;
++    pub const SYS_READLINK: usize = 85;
+     pub const SYS_GETCWD: usize = 183;
+     pub const SYS_MMAP: usize = 90;
+ }
+@@ -330,6 +333,14 @@
+             ret as usize as *const u8
+         }
+     }
++}
++
++pub fn read_link(path: &str, buf: &mut [u8]) -> isize {
++    let path = nul_terminated(path);
++    #[cfg(target_arch = "aarch64")]
++    unsafe { syscall4!(isize; SYS_READLINKAT, AT_FDCWD, path.as_ptr(), buf.as_mut_ptr(), buf.len()) }
++    #[cfg(not(target_arch = "aarch64"))]
++    unsafe { syscall3!(isize; SYS_READLINK, path.as_ptr(), buf.as_mut_ptr(), buf.len()) }
+ }
+ 
+ // Check if a path exists using access()/faccessat() with F_OK (0).
+diff --git a/runfiles-stub/src/macos.rs b/runfiles-stub/src/macos.rs
+--- a/runfiles-stub/src/macos.rs
++++ b/runfiles-stub/src/macos.rs
+@@ -70,6 +70,7 @@
+     pub const SYS_OPEN: usize = 5;
+     pub const SYS_CLOSE: usize = 6;
+     pub const SYS_ACCESS: usize = 33;
++    pub const SYS_READLINK: usize = 58;
+     pub const SYS_EXECVE: usize = 59;
+     pub const SYS_FCNTL: usize = 92;
+     pub const SYS_MMAP: usize = 197;
+@@ -301,6 +302,11 @@
+     } else {
+         ret as *const u8
+     }
++}
++
++pub fn read_link(path: &str, buf: &mut [u8]) -> isize {
++    let path = nul_terminated(path);
++    unsafe { syscall3!(isize; SYS_READLINK, path.as_ptr(), buf.as_mut_ptr(), buf.len()) }
+ }
+ 
+ // Check if a path exists using access() with F_OK (0).
+diff --git a/finalize-stub/src/main.rs b/finalize-stub/src/main.rs
+--- a/finalize-stub/src/main.rs
++++ b/finalize-stub/src/main.rs
+@@ -39,6 +39,10 @@
+     #[arg(long, default_value = "true", action = clap::ArgAction::Set)]
+     export_runfiles_env: bool,
+ 
++    /// Prefer runfiles beside the executable to an inherited runfiles environment.
++    #[arg(long)]
++    prefer_adjacent_runfiles: bool,
++
+     /// Enable verbose output
+     #[arg(short, long)]
+     verbose: bool,
+@@ -92,7 +96,7 @@
+     Ok(())
+ }
+ 
+-fn finalize_stub(template_path: &str, output_path: Option<&str>, argv: &[String], transform_flags: u32, export_runfiles_env: bool, verbose: bool) -> Result<(), String> {
++fn finalize_stub(template_path: &str, output_path: Option<&str>, argv: &[String], transform_flags: u32, export_runfiles_env: bool, prefer_adjacent_runfiles: bool, verbose: bool) -> Result<(), String> {
+     if argv.is_empty() {
+         return Err("At least one argument (argv[0]) is required".to_string());
+     }
+@@ -150,6 +154,13 @@
+ 
+     if verbose {
+         eprintln!("Replaced EXPORT_RUNFILES_ENV with: {}", export_str);
++    }
++
++    // Older templates use the environment-first policy and have no policy field.
++    match find_pattern(&data, b"@@PREFER_ADJACENT_RUNFILES@@") {
++        Some(pos) => replace_at(&mut data, pos, if prefer_adjacent_runfiles { b"1" } else { b"0" }, 32)?,
++        None if prefer_adjacent_runfiles => return Err("Template does not support --prefer-adjacent-runfiles".into()),
++        None => {}
+     }
+ 
+     // Find and replace ARG placeholders
+@@ -288,7 +299,7 @@
+         flags
+     };
+ 
+-    match finalize_stub(&cli.template, cli.output.as_deref(), &cli.args, transform_flags, cli.export_runfiles_env, cli.verbose) {
++    match finalize_stub(&cli.template, cli.output.as_deref(), &cli.args, transform_flags, cli.export_runfiles_env, cli.prefer_adjacent_runfiles, cli.verbose) {
+         Ok(()) => {
+             if cli.verbose {
+                 if let Some(output) = cli.output {
+diff --git a/launcher/private/rules/lib.bzl b/launcher/private/rules/lib.bzl
+--- a/launcher/private/rules/lib.bzl
++++ b/launcher/private/rules/lib.bzl
+@@ -43,12 +43,14 @@
+     embedded_args.append(arg)
+     return embedded_args, transformed_args
+ 
+-def _compile_stub(*, ctx, embedded_args, transformed_args, output_file, cfg = "target", template_exec_group = None, template_file = None, finalizer_toolchain_type = _FINALIZER_TOOLCHAIN_TYPE):
++def _compile_stub(*, ctx, embedded_args, transformed_args, output_file, cfg = "target", template_exec_group = None, template_file = None, finalizer_toolchain_type = _FINALIZER_TOOLCHAIN_TYPE, prefer_adjacent_runfiles = False):
+     template = _get_template(ctx, cfg = cfg, template_exec_group = template_exec_group, template_file = template_file)
+     args = ctx.actions.args()
+     args.add("--template", template)
+     args.add("-o", output_file)
+     args.add_joined("--transform", transformed_args, join_with = ",")
++    if prefer_adjacent_runfiles:
++        args.add("--prefer-adjacent-runfiles")
+     args.add("--")
+     args.add_all(embedded_args)
+     ctx.actions.run(
+diff --git a/integration-tests/src/main.rs b/integration-tests/src/main.rs
+--- a/integration-tests/src/main.rs
++++ b/integration-tests/src/main.rs
+@@ -279,9 +279,20 @@
+     args: &[&str],
+     transform_indices: &[usize],
+ ) -> Result<(), String> {
++    finalize_stub_with_options(config, output_path, args, transform_indices, &[])
++}
++
++fn finalize_stub_with_options(
++    config: &TestConfig,
++    output_path: &Path,
++    args: &[&str],
++    transform_indices: &[usize],
++    options: &[&str],
++) -> Result<(), String> {
+     let mut cmd = Command::new(&config.finalizer_path);
+     cmd.arg("--template").arg(&config.template_path);
+     cmd.arg("--output").arg(output_path);
++    cmd.args(options);
+ 
+     // Add transform flags
+     if !transform_indices.is_empty() {
+@@ -1150,6 +1161,35 @@
+         ));
+     }
+ 
++    #[cfg(unix)]
++    {
++        // An installed command can point at its packaged executable through a
++        // relative symlink, with only a manifest beside the packaged target.
++        finalize_stub_with_options(config, &stub_path, &[&rlocation], &[0], &["--prefer-adjacent-runfiles"])?;
++        let own = real_dir.join("stub.runfiles_manifest");
++        fs::rename(&manifest_path, &own).map_err(|e| format!("Move the package manifest: {e}"))?;
++        let alias = link_dir.join("installed");
++        symlink_file(Path::new("../real/stub"), &alias)?;
++        let foreign = link_dir.join("parent.runfiles");
++        fs::create_dir(&foreign).map_err(|e| format!("Create the caller's runfiles: {e}"))?;
++        let mut cmd = Command::new(&alias);
++        cmd.env("RUNFILES_DIR", &foreign).env_remove("RUNFILES_MANIFEST_FILE");
++        let output = cmd.output().map_err(|e| format!("Run installed alias: {e}"))?;
++        let stdout = String::from_utf8_lossy(&output.stdout);
++        let selected = environment_path(&stdout, "RUNFILES_MANIFEST_FILE").and_then(|p| fs::canonicalize(p).ok());
++        let expected = fs::canonicalize(&own).map_err(|e| format!("Resolve the package manifest: {e}"))?;
++        if !output.status.success() || selected.as_deref() != Some(expected.as_path()) {
++            return Err(format!("Installed command did not export its own manifest: {output:?}"));
++        }
++
++        // Once the invoked command has its own source, every argument must
++        // come from that source, even if the target's manifest has the file.
++        fs::create_dir(link_dir.join("installed.runfiles")).map_err(|e| format!("Create alias runfiles: {e}"))?;
++        if cmd.status().map_err(|e| format!("Run alias with its own source: {e}"))?.success() {
++            return Err("Installed command drew its program from a second source".into());
++        }
++    }
++
+     println!("    PASS");
+ 
+     Ok(())

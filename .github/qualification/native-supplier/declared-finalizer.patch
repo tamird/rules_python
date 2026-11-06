@@ -1,0 +1,36 @@
+diff --git a/launcher/private/rules/lib.bzl b/launcher/private/rules/lib.bzl
+--- a/launcher/private/rules/lib.bzl
++++ b/launcher/private/rules/lib.bzl
+@@ -2,8 +2,8 @@
+ _TEMPLATE_TOOLCHAIN_TYPE = Label("//launcher:template_toolchain_type")
+ _TEMPLATE_EXEC_TOOLCHAIN_TYPE = Label("//launcher:template_exec_toolchain_type")
+ 
+-def _get_finalizer(ctx):
+-    toolchain = ctx.toolchains[_FINALIZER_TOOLCHAIN_TYPE]
++def _get_finalizer(ctx, toolchain_type):
++    toolchain = ctx.toolchains[toolchain_type]
+     return toolchain.finalizer_info.finalizer
+ 
+ def _get_template(ctx, *, cfg = "target", template_exec_group = None, template_file = None):
+@@ -43,7 +43,7 @@
+     embedded_args.append(arg)
+     return embedded_args, transformed_args
+ 
+-def _compile_stub(*, ctx, embedded_args, transformed_args, output_file, cfg = "target", template_exec_group = None, template_file = None):
++def _compile_stub(*, ctx, embedded_args, transformed_args, output_file, cfg = "target", template_exec_group = None, template_file = None, finalizer_toolchain_type = _FINALIZER_TOOLCHAIN_TYPE):
+     template = _get_template(ctx, cfg = cfg, template_exec_group = template_exec_group, template_file = template_file)
+     args = ctx.actions.args()
+     args.add("--template", template)
+@@ -53,10 +53,10 @@
+     args.add_all(embedded_args)
+     ctx.actions.run(
+         outputs = [output_file],
+-        executable = _get_finalizer(ctx),
++        executable = _get_finalizer(ctx, finalizer_toolchain_type),
+         arguments = [args],
+         inputs = [template],
+-        toolchain = _FINALIZER_TOOLCHAIN_TYPE,
++        toolchain = finalizer_toolchain_type,
+     )
+     return output_file
+ 
