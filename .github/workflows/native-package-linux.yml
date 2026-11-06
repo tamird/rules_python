@@ -1,0 +1,46 @@
+name: Run the packaged Python bootstrap on Linux
+on:
+  push:
+    branches: [qualification/native-packaged-bootstrap]
+permissions:
+  contents: read
+jobs:
+  package:
+    if: github.repository == 'tamird/rules_python' && github.event.created
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+            bazelisk: 5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            bazelisk: e20e8b0f4f240091b7a55bf17b9398bd4f40ee70ae0208dff95dd4c445fb4010
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 3
+          persist-credentials: false
+      - name: Compare the extracted executables and run both Bazel tests
+        env:
+          ARCH: ${{ matrix.arch }}
+          BAZELISK_SHA: ${{ matrix.bazelisk }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = 99afa238c84f62cb0b29e458b9a8db49d1288cf1
+          test "$(git rev-parse HEAD^^)" = 943362ffab1a2e8488f50b8554256f9330d3837e
+          cp .github/qualification/packaged-native.py "$RUNNER_TEMP/packaged-native.py"
+          curl -fsSL --retry 3 "https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-$ARCH" -o "$RUNNER_TEMP/bazelisk"
+          echo "$BAZELISK_SHA  $RUNNER_TEMP/bazelisk" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/bazelisk"
+          python3 -I -B "$RUNNER_TEMP/packaged-native.py"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: packaged-launcher-${{ matrix.arch }}
+          path: ${{ runner.temp }}/packaged-launcher/receipt.json
+          if-no-files-found: error
+          retention-days: 7
