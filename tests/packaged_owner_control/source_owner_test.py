@@ -4,9 +4,10 @@ from pathlib import Path
 import subprocess
 import sys
 import tarfile
+from typing import Any
 
 
-def unpack(archive_path, name, directory):
+def unpack(archive_path: str, name: str, directory: Path) -> Path:
     directory.mkdir()
     with tarfile.open(archive_path) as archive:
         paths = [p for p in archive.getnames() if Path(p).name == name and ".runfiles/" not in p]
@@ -17,9 +18,9 @@ def unpack(archive_path, name, directory):
     return exe
 
 
-def main():
+def main() -> None:
     child_tar, parent_tar, mode = sys.argv[1:]
-    results = {"mode": mode, "supplier": "BCR 0.0.17"}
+    results: dict[str, Any] = {"mode": mode, "supplier": "BCR 0.0.17"}
     tmp = Path(os.environ["TEST_TMPDIR"]).resolve()
     child = unpack(child_tar, "child", tmp / "installed-child")
     parent = unpack(parent_tar, "parent", tmp / "installed-parent")
@@ -30,7 +31,7 @@ def main():
     marker = parent_package / "_child_stage2_bootstrap.py"
     venv_bin = Path("_child.venv/bin")
     child_interpreters = [p.name for p in (child_tree / package / venv_bin).glob("python*") if p.is_file()]
-    def parent_owns_interpreter():
+    def parent_owns_interpreter() -> bool:
         return bool(child_interpreters) and all(
             (parent_package / venv_bin / name).is_file() and os.access(parent_package / venv_bin / name, os.X_OK)
             for name in child_interpreters
@@ -42,29 +43,31 @@ def main():
             "parent_has_interpreter": parent_owns_interpreter(),
             "child_has_stage2": (child_tree / package / marker.name).is_file(),
             "interpreter_names": child_interpreters,
+            "stage2_key": str(marker.relative_to(parent_tree)),
             "files": sorted(p.name for p in parent_package.iterdir()) if parent_package.is_dir() else [],
         }
 
-        def owner(path):
-            if not path:
+        def owner(value: str | None) -> str | None:
+            if not value:
                 return None
-            path = Path(path).resolve()
+            path = Path(value.removesuffix("_manifest") if value.endswith(".runfiles_manifest") else value).resolve()
             for name, root in (("parent", parent_tree), ("child", child_tree)):
                 if path == root or path.is_relative_to(root):
                     return name
             return "other"
 
-        def run(case, *argv):
+        def run(case: str, *argv: Path) -> None:
             proc = subprocess.run(argv, cwd=tmp, env={"PATH": "/usr/bin:/bin"}, capture_output=True, timeout=40, text=True)
-            records = {}
+            records: dict[str, str | None] = {}
             for line in proc.stdout.splitlines():
                 if line.startswith("{"):
                     records.update(json.loads(line))
             results[case] = {
                 "exit": proc.returncode,
-                "parent_exported": owner(records.get("parent_root")),
-                "child_exported": owner(records.get("child_root")),
+                "parent_exported": owner(records.get("parent_root") or records.get("parent_manifest")),
+                "child_exported": owner(records.get("child_root") or records.get("child_manifest")),
                 "application": owner(records.get("main")),
+                "child_variable": "directory" if records.get("child_root") else ("manifest" if records.get("child_manifest") else None),
                 "error": proc.stderr.strip()[-700:].replace(str(tmp), "<tmp>"),
             }
 
