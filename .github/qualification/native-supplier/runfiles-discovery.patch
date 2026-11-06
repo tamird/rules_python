@@ -1,0 +1,290 @@
+diff --git a/runfiles-stub/src/run.rs b/runfiles-stub/src/run.rs
+--- a/runfiles-stub/src/run.rs
++++ b/runfiles-stub/src/run.rs
+@@ -96,7 +96,11 @@
+     let needs_runfiles = needs_transform || export_runfiles_env;
+ 
+     let runfiles = if needs_runfiles {
+-        match Runfiles::create(&rt) {
++        let arg0 = placeholders::arg(0);
++        let program = core::str::from_utf8(&arg0[..cstr_len(arg0)])
++            .ok()
++            .filter(|key| transform_flags & 1 != 0 && !platform::is_absolute(key));
++        match Runfiles::create(&rt, program) {
+             Some(rf) => Some(rf),
+             None => {
+                 eline(b"ERROR: Failed to initialize runfiles");
+diff --git a/runfiles-stub/src/runfiles.rs b/runfiles-stub/src/runfiles.rs
+--- a/runfiles-stub/src/runfiles.rs
++++ b/runfiles-stub/src/runfiles.rs
+@@ -33,11 +33,25 @@
+ }
+ 
+ impl Runfiles {
+-    pub fn create(rt: &platform::RuntimeArgs) -> Option<Self> {
+-        // Environment-provided sources take precedence over sources discovered
+-        // next to the executable. Within a tier, `select_source` applies the
+-        // platform's directory-vs-manifest preference.
+-        if let Some(rf) = select_source(
++    pub fn create(rt: &platform::RuntimeArgs, program: Option<&str>) -> Option<Self> {
++        // An outer Bazel process can export its own runfiles when starting an
++        // independent binary. Prefer the inherited source when it provides the
++        // requested program, and always use one source for the entire launch.
++        let mut original = None;
++        let mut usable = |source: Self| -> Option<Self> {
++            if let Some(key) = program {
++                if !source.rlocation(key).is_some_and(|path| platform::path_exists(&path)) {
++                    // If no alternative can run it, preserve the original
++                    // selection and the normal exec/manifest error.
++                    if original.is_none() {
++                        original = Some(source);
++                    }
++                    return None;
++                }
++            }
++            Some(source)
++        };
++        if let Some(source) = select_source(
+             || {
+                 platform::get_env_var("RUNFILES_DIR")
+                     .filter(|path| !path.is_empty() && dir_exists(path))
+@@ -56,45 +70,52 @@
+                         })
+                     })
+             },
++            &mut usable,
+         ) {
+-            return Some(rf);
+-        }
+-
+-        // Locate runfiles next to the launching executable: the
+-        // <executable>.runfiles directory and the <executable>.runfiles_manifest
+-        // file, in the platform's preferred order. The executable path comes from
+-        // the OS (an absolute, non-symlink-resolved launch path), not from argv[0].
+-        if let Some(exe_path) = rt.executable_path() {
+-            let exe_len = cstr_len(&exe_path);
+-            if exe_len > 0 {
+-                // Convert the executable path to a string (if valid UTF-8).
+-                let exe_str = core::str::from_utf8(&exe_path[..exe_len]).ok()?;
+-                let runfiles_dir = String::from(exe_str) + ".runfiles";
+-                let manifest_path = String::from(exe_str) + ".runfiles_manifest";
+-
+-                if let Some(rf) = select_source(
+-                    || {
+-                        dir_exists(&runfiles_dir).then(|| Self::Directory {
+-                            path: runfiles_dir.clone(),
+-                        })
+-                    },
+-                    || {
+-                        platform::load_manifest(&manifest_path).map(|manifest| Self::Manifest {
+-                            manifest,
+-                            path: manifest_path.clone(),
+-                            // Preserve the logical path even though the sibling
+-                            // tree is absent; the manifest selected the actual
+-                            // executable.
+-                            logical_dir: Some(LogicalDir::Adjacent(runfiles_dir.clone())),
+-                        })
+-                    },
+-                ) {
+-                    return Some(rf);
++            return Some(source);
++        }
++
++        let executable_source = (|| {
++            let exe_path = rt.executable_path()?;
++            let exe = core::str::from_utf8(&exe_path[..cstr_len(&exe_path)]).ok()?;
++            if exe.is_empty() {
++                return None;
++            }
++            if let Some(source) = Self::beside(exe, &mut usable) {
++                return Some(source);
++            }
++            #[cfg(unix)]
++            {
++                // Each spelling may own its own runfiles. Check the invoked
++                // name first, then the successive targets of a symlink chain.
++                let mut path = String::from(exe);
++                for _ in 0..40 {
++                    path = link_target(&path)?;
++                    if let Some(source) = Self::beside(&path, &mut usable) {
++                        return Some(source);
++                    }
+                 }
+             }
+-        }
+-
+-        None
++            None
++        })();
++        executable_source.or(original)
++    }
++
++    fn beside(exe: &str, usable: &mut impl FnMut(Self) -> Option<Self>) -> Option<Self> {
++        let runfiles_dir = String::from(exe) + ".runfiles";
++        let manifest_path = String::from(exe) + ".runfiles_manifest";
++        select_source(
++            || dir_exists(&runfiles_dir).then(|| Self::Directory { path: runfiles_dir.clone() }),
++            || {
++                platform::load_manifest(&manifest_path).map(|manifest| Self::Manifest {
++                    manifest,
++                    path: manifest_path.clone(),
++                    // The logical sibling may be absent in manifest-only mode.
++                    logical_dir: Some(LogicalDir::Adjacent(runfiles_dir.clone())),
++                })
++            },
++            usable,
++        )
+     }
+ 
+     pub fn rlocation(&self, path: &str) -> Option<String> {
+@@ -170,12 +191,29 @@
+ fn select_source(
+     directory: impl FnOnce() -> Option<Runfiles>,
+     manifest: impl FnOnce() -> Option<Runfiles>,
++    usable: &mut impl FnMut(Runfiles) -> Option<Runfiles>,
+ ) -> Option<Runfiles> {
+     if platform::PREFER_DIRECTORY_SOURCE {
+-        directory().or_else(manifest)
++        directory().and_then(&mut *usable).or_else(|| manifest().and_then(usable))
+     } else {
+-        manifest().or_else(directory)
+-    }
++        manifest().and_then(&mut *usable).or_else(|| directory().and_then(usable))
++    }
++}
++
++#[cfg(unix)]
++fn link_target(path: &str) -> Option<String> {
++    let mut buf = [0_u8; 4096];
++    let len = platform::read_link(path, &mut buf);
++    if len <= 0 || len as usize == buf.len() {
++        return None;
++    }
++    let target = core::str::from_utf8(&buf[..len as usize]).ok()?;
++    if target.starts_with('/') {
++        return Some(String::from(target));
++    }
++    // Resolve a relative link in its parent, independently of the caller's cwd.
++    let (dir, _) = path.rsplit_once('/')?;
++    Some(String::from(dir) + "/" + target)
+ }
+ 
+ fn dir_exists(path: &str) -> bool {
+diff --git a/runfiles-stub/src/linux.rs b/runfiles-stub/src/linux.rs
+--- a/runfiles-stub/src/linux.rs
++++ b/runfiles-stub/src/linux.rs
+@@ -64,6 +64,7 @@
+     pub const SYS_LSEEK: usize = 8;
+     pub const SYS_MMAP: usize = 9;
+     pub const SYS_ACCESS: usize = 21;
++    pub const SYS_READLINK: usize = 89;
+     pub const SYS_GETCWD: usize = 79;
+     pub const SYS_EXECVE: usize = 59;
+     pub const SYS_EXIT: usize = 60;
+@@ -77,6 +78,7 @@
+     pub const SYS_CLOSE: usize = 57;
+     pub const SYS_LSEEK: usize = 62;
+     pub const SYS_MMAP: usize = 222;
++    pub const SYS_READLINKAT: usize = 78;
+     pub const SYS_FACCESSAT: usize = 48;  // faccessat is used on aarch64
+     pub const SYS_GETCWD: usize = 17;
+     pub const SYS_EXECVE: usize = 221;
+@@ -94,6 +96,7 @@
+     pub const SYS_LSEEK: usize = 19;
+     pub const SYS_EXECVE: usize = 11;
+     pub const SYS_ACCESS: usize = 33;
++    pub const SYS_READLINK: usize = 85;
+     pub const SYS_GETCWD: usize = 183;
+     pub const SYS_MMAP: usize = 90;
+ }
+@@ -330,6 +333,14 @@
+             ret as usize as *const u8
+         }
+     }
++}
++
++pub fn read_link(path: &str, buf: &mut [u8]) -> isize {
++    let path = nul_terminated(path);
++    #[cfg(target_arch = "aarch64")]
++    unsafe { syscall4!(isize; SYS_READLINKAT, AT_FDCWD, path.as_ptr(), buf.as_mut_ptr(), buf.len()) }
++    #[cfg(not(target_arch = "aarch64"))]
++    unsafe { syscall3!(isize; SYS_READLINK, path.as_ptr(), buf.as_mut_ptr(), buf.len()) }
+ }
+ 
+ // Check if a path exists using access()/faccessat() with F_OK (0).
+diff --git a/runfiles-stub/src/macos.rs b/runfiles-stub/src/macos.rs
+--- a/runfiles-stub/src/macos.rs
++++ b/runfiles-stub/src/macos.rs
+@@ -70,6 +70,7 @@
+     pub const SYS_OPEN: usize = 5;
+     pub const SYS_CLOSE: usize = 6;
+     pub const SYS_ACCESS: usize = 33;
++    pub const SYS_READLINK: usize = 58;
+     pub const SYS_EXECVE: usize = 59;
+     pub const SYS_FCNTL: usize = 92;
+     pub const SYS_MMAP: usize = 197;
+@@ -301,6 +302,11 @@
+     } else {
+         ret as *const u8
+     }
++}
++
++pub fn read_link(path: &str, buf: &mut [u8]) -> isize {
++    let path = nul_terminated(path);
++    unsafe { syscall3!(isize; SYS_READLINK, path.as_ptr(), buf.as_mut_ptr(), buf.len()) }
+ }
+ 
+ // Check if a path exists using access() with F_OK (0).
+diff --git a/integration-tests/src/main.rs b/integration-tests/src/main.rs
+--- a/integration-tests/src/main.rs
++++ b/integration-tests/src/main.rs
+@@ -592,6 +592,20 @@
+         ));
+     }
+ 
++    // An existing runfiles tree exported by an unrelated parent does not
++    // own this executable. The valid environment manifest must still win.
++    let foreign_dir = test_dir.join("foreign.runfiles");
++    fs::create_dir(&foreign_dir).map_err(|e| format!("Create foreign runfiles: {e}"))?;
++    command.env("RUNFILES_DIR", &foreign_dir);
++    let output = command.output().map_err(|e| format!("Start with foreign runfiles: {e}"))?;
++    let stdout = String::from_utf8_lossy(&output.stdout);
++    if !output.status.success()
++        || environment_path(&stdout, "RUNFILES_MANIFEST_FILE") != Some(manifest_export_path.as_path())
++        || !stdout.contains("ENV:RUNFILES_DIR=<unset>")
++    {
++        return Err(format!("Foreign directory displaced the usable environment manifest: {output:?}"));
++    }
++
+     // With no environment source, the adjacent directory and manifest have equal
+     // precedence: the directory wins where the tree is materialized, the manifest
+     // on Windows, and the winner is exported consistently.
+@@ -1148,6 +1162,28 @@
+             manifest_path.display(),
+             stdout
+         ));
++    }
++
++    #[cfg(unix)]
++    {
++        // An installed alias can also point to a packaged executable with
++        // its manifest beside the target, including via a relative symlink.
++        let beside_target = real_dir.join("stub.runfiles_manifest");
++        fs::rename(&manifest_path, &beside_target)
++            .map_err(|e| format!("Move manifest to the installed program: {e}"))?;
++        let alias = link_dir.join("installed");
++        symlink_file(Path::new("../real/stub"), &alias)?;
++        let output = Command::new(alias)
++            .env_remove("RUNFILES_DIR")
++            .env_remove("RUNFILES_MANIFEST_FILE")
++            .output()
++            .map_err(|e| format!("Run installed alias: {e}"))?;
++        let stdout = String::from_utf8_lossy(&output.stdout);
++        let selected = environment_path(&stdout, "RUNFILES_MANIFEST_FILE").and_then(|p| fs::canonicalize(p).ok());
++        let expected = fs::canonicalize(&beside_target).map_err(|e| format!("Resolve installed manifest: {e}"))?;
++        if !output.status.success() || selected.as_deref() != Some(expected.as_path()) {
++            return Err(format!("Installed alias did not find the target's manifest: {output:?}"));
++        }
+     }
+ 
+     println!("    PASS");
