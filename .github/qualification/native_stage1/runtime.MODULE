@@ -1,0 +1,9 @@
+
+stage1_http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+stage1_http_archive(
+    name = "stage1_cpython",
+    build_file = "//tests/native_stage1:python.BUILD",
+    sha256 = "2fc493f8f14ff8bf743eb34934bf1edbac518b023e8aa72bc7c0006ee13495e4",
+    strip_prefix = "python/install",
+    urls = ["https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.11.18%2B20261026-x86_64-unknown-linux-musl-lto%2Bstatic-full.tar.zst"],
+)

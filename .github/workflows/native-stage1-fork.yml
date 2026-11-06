@@ -1,0 +1,36 @@
+name: General native Python startup
+on:
+  push:
+    branches: [qualification/native-stage1-scratch]
+permissions:
+  contents: read
+jobs:
+  native:
+    if: github.repository == 'tamird/rules_python' && github.event.created
+    runs-on: ubuntu-24.04
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 3
+          persist-credentials: false
+      - name: Compare ordinary Bazel Python tools inside the shell-free image
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = 804470ef813ec3a25df2432d374f84bac6ec2d76
+          test "$(git rev-parse HEAD^^)" = 943362ffab1a2e8488f50b8554256f9330d3837e
+          dst="$RUNNER_TEMP/native-python-cases"
+          mkdir -p "$dst"
+          cp .github/qualification/native_stage1/* "$dst/"
+          curl --fail --location --silent --show-error https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-amd64 -o "$dst/bazelisk"
+          echo "5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992  $dst/bazelisk" | sha256sum -c -
+          chmod 755 "$dst/bazelisk"
+          python3 "$dst/verify.py"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: python-stage1-results
+          path: ${{ runner.temp }}/native-python-cases/results.json
+          if-no-files-found: error
+          retention-days: 7
