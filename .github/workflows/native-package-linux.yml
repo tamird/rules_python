@@ -1,0 +1,57 @@
+name: Run the packaged Python bootstrap on Linux
+on:
+  push:
+    branches: [qualification/native-packaged-bootstrap-upstream]
+permissions:
+  contents: read
+jobs:
+  package:
+    name: Packaged Python on ${{ matrix.arch }}
+    if: github.repository == 'tamird/rules_python' && github.event.created
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+            bazelisk: 5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992
+            buildifier: 6ceb7b0ab7cf66fceccc56a027d21d9cc557a7f34af37d2101edb56b92fcfa1a
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            bazelisk: e20e8b0f4f240091b7a55bf17b9398bd4f40ee70ae0208dff95dd4c445fb4010
+            buildifier: 3baa1cf7eb41d51f462fdd1fff3a6a4d81d757275d05b2dd5f48671284e9a1a5
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 3
+          persist-credentials: false
+      - name: Compare the extracted executables and run both Bazel tests
+        env:
+          ARCH: ${{ matrix.arch }}
+          BAZELISK_SHA: ${{ matrix.bazelisk }}
+          BUILDIFIER_SHA: ${{ matrix.buildifier }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = cbbf94eee74ac2087d565a247a724e52596e66b9
+          test "$(git rev-parse HEAD^^)" = 26b0a238d28e072b3617d7eccb9fd15f6580a5ab
+          cp .github/qualification/packaged-native.py "$RUNNER_TEMP/packaged-native.py"
+          curl -fsSL --retry 3 "https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-$ARCH" -o "$RUNNER_TEMP/bazelisk"
+          echo "$BAZELISK_SHA  $RUNNER_TEMP/bazelisk" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/bazelisk"
+          curl -fsSL --retry 3 "https://github.com/bazelbuild/buildtools/releases/download/v8.2.1/buildifier-linux-$ARCH" -o "$RUNNER_TEMP/buildifier"
+          echo "$BUILDIFIER_SHA  $RUNNER_TEMP/buildifier" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/buildifier"
+          fmt=0
+          "$RUNNER_TEMP/buildifier" -mode=check MODULE.bazel python/private/BUILD.bazel python/private/{flags,py_executable,py_repositories}.bzl tests/bootstrap_impls/BUILD.bazel tests/modules/other/BUILD.bazel || fmt=$?
+          echo "buildifier exit: $fmt"
+          python3 -I -B "$RUNNER_TEMP/packaged-native.py"
+          exit "$fmt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: packaged-launcher-${{ matrix.arch }}
+          path: ${{ runner.temp }}/packaged-launcher/receipt.json
+          if-no-files-found: error
+          retention-days: 7
