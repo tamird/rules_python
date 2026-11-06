@@ -1,0 +1,52 @@
+load("//python:py_binary.bzl", "py_binary")
+load("//python:py_runtime.bzl", "py_runtime")
+load("//python:py_runtime_pair.bzl", "py_runtime_pair")
+
+py_binary(
+    name = "probe",
+    srcs = ["probe.py"],
+)
+
+py_runtime(
+    name = "custom_runtime",
+    bootstrap_template = "custom.py",
+    files = ["@python_3_14//:files"],
+    interpreter = "@python_3_14//:python3",
+    interpreter_version_info = {
+        "major": "3",
+        "minor": "14",
+    },
+    python_version = "PY3",
+)
+
+py_runtime(
+    name = "path_runtime",
+    interpreter_path = "/usr/bin/python3",
+    interpreter_version_info = {
+        "major": "3",
+        "minor": "14",
+    },
+    python_version = "PY3",
+)
+
+py_runtime_pair(
+    name = "custom_pair",
+    py3_runtime = ":custom_runtime",
+)
+
+py_runtime_pair(
+    name = "path_pair",
+    py3_runtime = ":path_runtime",
+)
+
+toolchain(
+    name = "custom_toolchain",
+    toolchain = ":custom_pair",
+    toolchain_type = "//python:toolchain_type",
+)
+
+toolchain(
+    name = "path_toolchain",
+    toolchain = ":path_pair",
+    toolchain_type = "//python:toolchain_type",
+)

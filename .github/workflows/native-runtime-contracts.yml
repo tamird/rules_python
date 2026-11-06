@@ -1,0 +1,53 @@
+name: Verify the native Python runtime contract
+on:
+  push:
+    branches: [qualification/native-bootstrap-runtime-contracts]
+permissions: {contents: read}
+jobs:
+  package:
+    name: Packaged Python on ${{ matrix.arch }}
+    if: github.repository == 'tamird/rules_python' && github.actor == github.repository_owner && github.event.created && !github.event.deleted && github.run_attempt == 1
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+            bazelisk: 5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            bazelisk: e20e8b0f4f240091b7a55bf17b9398bd4f40ee70ae0208dff95dd4c445fb4010
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: {fetch-depth: 3, persist-credentials: false}
+      - name: Select the reviewed source
+        env: {ARCH: "${{ matrix.arch }}", SHA: "${{ matrix.bazelisk }}"}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = ed9fe9ff2db20bacf42dadbd8d80b2ac36867128
+          test "$(git rev-parse HEAD^^)" = cbbf94eee74ac2087d565a247a724e52596e66b9
+          cp -r .github/qualification/native-runtime "$RUNNER_TEMP/native-runtime"
+          git switch --quiet --detach ed9fe9ff2db20bacf42dadbd8d80b2ac36867128
+          curl --retry 3 -fsSL "https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-$ARCH" -o "$RUNNER_TEMP/bazelisk"
+          echo "$SHA  $RUNNER_TEMP/bazelisk" | sha256sum -c -
+          chmod 755 "$RUNNER_TEMP/bazelisk"
+      - name: Check Starlark formatting
+        if: matrix.arch == 'amd64'
+        run: |
+          set -euo pipefail
+          curl --retry 3 -fsSL https://github.com/bazelbuild/buildtools/releases/download/v8.2.1/buildifier-linux-amd64 -o "$RUNNER_TEMP/buildifier"
+          echo "6ceb7b0ab7cf66fceccc56a027d21d9cc557a7f34af37d2101edb56b92fcfa1a  $RUNNER_TEMP/buildifier" | sha256sum -c -
+          chmod 755 "$RUNNER_TEMP/buildifier"
+          "$RUNNER_TEMP/buildifier" -mode=check MODULE.bazel python/private/{BUILD.bazel,flags.bzl,py_executable.bzl,py_repositories.bzl,py_runtime_info.bzl} tests/bootstrap_impls/BUILD.bazel tests/modules/other/BUILD.bazel
+      - name: Exercise configured interpreters and the archived application
+        if: always() && !cancelled()
+        run: python3 -I -B "$RUNNER_TEMP/native-runtime/check.py"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: native-runtime-${{ matrix.arch }}
+          path: ${{ runner.temp }}/native-runtime/receipt.json
+          if-no-files-found: error
+          retention-days: 7
