@@ -85,6 +85,8 @@ _py_builtins = py_internal
 _EXTERNAL_PATH_PREFIX = "external"
 _ZIP_RUNFILES_DIRECTORY_NAME = "runfiles"
 _INIT_PY = "__init__.py"
+_NATIVE_FINALIZER = Label("//python/private:native_launcher_finalizer_toolchain_type")
+_NATIVE_TEMPLATE = Label("//python/private:native_launcher_template_toolchain_type")
 
 # Non-Google-specific attributes for executables
 # These attributes are for rules that accept Python sources.
@@ -464,7 +466,7 @@ WARNING: Target: {}
             fail("Native startup requires a py_runtime with an interpreter file")
         if should_create_executable_zip or not venv.interpreter or venv.recreate_venv_at_runtime:
             fail("Native startup requires a build-time virtual environment and build_python_zip=False")
-        if not ctx.toolchains[launcher.finalizer_toolchain_type] or not ctx.toolchains[launcher.template_toolchain_type]:
+        if not ctx.toolchains[_NATIVE_FINALIZER] or not ctx.toolchains[_NATIVE_TEMPLATE]:
             fail("No native Python launcher is available for the selected platforms")
 
         # Python options can come from either the rule or the caller. Read them
@@ -479,7 +481,7 @@ WARNING: Target: {}
         bootstrap = launcher.entrypoint(venv.interpreter)
         bootstrap.embedded_args("-I", "-S")
         bootstrap.runfiles(prepare, venv.interpreter, stage2_bootstrap)
-        bootstrap.compile(ctx, output_file = executable)
+        bootstrap.compile(ctx, output_file = executable, finalizer_toolchain_type = _NATIVE_FINALIZER)
         extra_runfiles = extra_runfiles.merge(ctx.runfiles([prepare]))
     elif should_create_executable_zip:
         if bootstrap_output != None:
@@ -2267,8 +2269,8 @@ def create_executable_rule_builder(implementation, **kwargs):
         provides = [PyExecutableInfo, PyInfo] + _MaybeBuiltinPyInfo,
         toolchains = [
             ruleb.ToolchainType(TOOLCHAIN_TYPE),
-            ruleb.ToolchainType(Label("//python/private:native_launcher_finalizer_toolchain_type"), mandatory = False),
-            ruleb.ToolchainType(Label("//python/private:native_launcher_template_toolchain_type"), mandatory = False),
+            ruleb.ToolchainType(_NATIVE_FINALIZER, mandatory = False),
+            ruleb.ToolchainType(_NATIVE_TEMPLATE, mandatory = False),
             ruleb.ToolchainType(EXEC_TOOLS_TOOLCHAIN_TYPE, mandatory = False),
             ruleb.ToolchainType(CC_TOOLCHAIN_TYPE, mandatory = False),
             ruleb.ToolchainType(SHRUBBERY_TOOLCHAIN_TYPE, mandatory = False),

@@ -389,7 +389,7 @@ Values:
   shell script) instead of requiring it be a Python program.
 * `native`: Start the toolchain's interpreter with a native executable. A
   program packaged with its runfiles can start on a system without Bash or a
-  system Python. This mode requires a launcher for the target platform, a
+  system Python. This mode requires Bzlmod, a launcher for the target platform, a
   {rule}`py_runtime` with an `interpreter` file, a build-time virtual
   environment, and {bzl:flag}`build_python_zip` set to `false`. The
   interpreter's own runtime libraries must also be available on the target.
