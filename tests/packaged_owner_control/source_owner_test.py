@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,7 +21,8 @@ def unpack(archive_path: str, name: str, directory: Path) -> Path:
 
 def main() -> None:
     child_tar, parent_tar, independent_tar, mode = sys.argv[1:]
-    results: dict[str, Any] = {"mode": mode, "supplier": "BCR 0.0.17"}
+    arm = os.environ["PACKAGED_OWNER_ARM"]
+    results: dict[str, Any] = {"mode": mode, "arm": arm}
     tmp = Path(os.environ["TEST_TMPDIR"]).resolve()
     child = unpack(child_tar, "child", tmp / "installed-child")
     parent = unpack(parent_tar, "parent", tmp / "installed-parent")
@@ -35,10 +37,23 @@ def main() -> None:
     child_interpreters = [p.name for p in (child_tree / package / venv_bin).glob("python*") if p.is_file()]
     def tree_owns_interpreter(tree: Path) -> bool:
         return bool(child_interpreters) and all(
-            (tree / package / venv_bin / name).is_file() and os.access(parent_package / venv_bin / name, os.X_OK)
+            (tree / package / venv_bin / name).is_file() and os.access(tree / package / venv_bin / name, os.X_OK)
             for name in child_interpreters
         )
     try:
+        def digest(path: Path) -> str:
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+
+        results["hashes"] = {
+            "archives": [digest(Path(a)) for a in (child_tar, parent_tar, independent_tar)],
+            "launchers": {p.name: digest(p) for p in (child, parent, independent)},
+            "stage2": digest(child_tree / package / marker.name),
+            "declared_stage2": digest(marker),
+            "main": digest(child_tree / package / "child.py"),
+            "declared_main": digest(parent_package / "child.py"),
+        }
+        assert results["hashes"]["stage2"] == results["hashes"]["declared_stage2"]
+        assert results["hashes"]["main"] == results["hashes"]["declared_main"]
         results["inputs"] = {
             "child_header": child.read_bytes()[:4].hex(),
             "parent_has_stage2": marker.is_file(),
@@ -73,6 +88,8 @@ def main() -> None:
                     records.update(json.loads(line))
             results[case] = {
                 "exit": proc.returncode,
+                "stdout_sha256": hashlib.sha256(proc.stdout.encode()).hexdigest(),
+                "stderr_sha256": hashlib.sha256(proc.stderr.encode()).hexdigest(),
                 "parent_exported": owner(records.get("parent_root") or records.get("parent_manifest")),
                 "child_exported": owner(records.get("child_root") or records.get("child_manifest")),
                 "application": owner(records.get("main")),
@@ -93,11 +110,13 @@ def main() -> None:
         assert results["declared_parent"]["exit"] == 0 and results["declared_parent"]["application"] == "parent"
         assert results["declared_parent"]["parent_exported"] == results["declared_parent"]["child_exported"] == "parent"
         assert results["independent_parent"]["parent_exported"] == "independent", results["independent_parent"]
-        if mode == "script":
+        if arm == "fixed":
             assert results["independent_parent"]["exit"] == 0
             assert results["independent_parent"]["application"] == results["independent_parent"]["child_exported"] == "child"
-        elif mode != "native":
-            raise ValueError(mode)
+        else:
+            assert arm in ("stock", "unset") and mode == "native"
+            assert results["independent_parent"]["exit"] == 1
+            assert results["independent_parent"]["application"] is None
     finally:
         print("OWNER_RESULT " + json.dumps(results, sort_keys=True), flush=True)
 
